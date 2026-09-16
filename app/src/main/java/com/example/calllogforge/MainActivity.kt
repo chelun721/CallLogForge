@@ -82,14 +82,11 @@ fun CallLogForgeScreen() {
 
     val writeCallLogLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasWriteCallLog = granted
-    }
+    ) { granted -> hasWriteCallLog = granted }
+
     val readPhoneStateLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasReadPhoneState = granted
-    }
+    ) { granted -> hasReadPhoneState = granted }
 
     LaunchedEffect(Unit) {
         if (!hasWriteCallLog) {
@@ -108,13 +105,20 @@ fun CallLogForgeScreen() {
     var selectedDay by remember { mutableIntStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH)) }
     var selectedHour by remember { mutableIntStateOf(Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) }
     var selectedMinute by remember { mutableIntStateOf(Calendar.getInstance().get(Calendar.MINUTE)) }
-    var selectedSecond by remember { mutableIntStateOf(Calendar.getInstance().get(Calendar.SECOND)) }
+
+    // 秒数：字符串状态，允许为空
+    var secondInput by remember {
+        mutableStateOf(Calendar.getInstance().get(Calendar.SECOND).toString())
+    }
+    // 通话时长：字符串状态，允许为空
     var durationInput by remember { mutableStateOf("30") }
-    var selectedSimIndex by remember { mutableIntStateOf(0) }
+
+    // SIM 卡槽：1 或 2，始终可选
+    var selectedSimSlot by remember { mutableIntStateOf(1) }
     var simAccounts by remember { mutableStateOf<List<PhoneAccountHandle>>(emptyList()) }
 
-    // ---- SIM 卡账户加载：改用 TelecomManager（API 23+） ----
-    LaunchedEffect(hasWriteCallLog, hasReadPhoneState) {
+    // ---- 加载真实 SIM 卡账户 ----
+    LaunchedEffect(hasReadPhoneState) {
         if (hasReadPhoneState) {
             try {
                 val telecomManager = context.getSystemService(TelecomManager::class.java)
@@ -155,9 +159,7 @@ fun CallLogForgeScreen() {
                 if (!hasWriteCallLog) {
                     Button(onClick = {
                         writeCallLogLauncher.launch(Manifest.permission.WRITE_CALL_LOG)
-                    }) {
-                        Text("申请")
-                    }
+                    }) { Text("申请") }
                 }
             }
         }
@@ -198,9 +200,7 @@ fun CallLogForgeScreen() {
                         selectedMonth = month
                         selectedDay = dayOfMonth
                     },
-                    selectedYear,
-                    selectedMonth,
-                    selectedDay
+                    selectedYear, selectedMonth, selectedDay
                 ).show()
             }) {
                 Text("$selectedYear-${selectedMonth + 1}-$selectedDay")
@@ -212,27 +212,33 @@ fun CallLogForgeScreen() {
                         selectedHour = hourOfDay
                         selectedMinute = minute
                     },
-                    selectedHour,
-                    selectedMinute,
-                    true
+                    selectedHour, selectedMinute, true
                 ).show()
             }) {
                 Text(String.format("%02d:%02d", selectedHour, selectedMinute))
             }
         }
+
+        // ---- 秒数：可留空 ----
         OutlinedTextField(
-            value = selectedSecond.toString(),
-            onValueChange = {
-                val sec = it.toIntOrNull()
-                if (sec != null && sec in 0..59) selectedSecond = sec
+            value = secondInput,
+            onValueChange = { input ->
+                if (input.isEmpty()) {
+                    secondInput = ""
+                } else if (input.all { it.isDigit() } &&
+                    (input.toIntOrNull() ?: 0) in 0..59
+                ) {
+                    secondInput = input
+                }
             },
-            label = { Text("秒 (0-59)") },
+            label = { Text("秒 (0-59，可留空)") },
+            placeholder = { Text("留空按 0 处理") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.width(140.dp),
+            modifier = Modifier.width(200.dp),
             singleLine = true
         )
 
-        // ---- 通话时长（秒） ----
+        // ---- 通话时长：可留空 ----
         OutlinedTextField(
             value = durationInput,
             onValueChange = { input ->
@@ -240,32 +246,34 @@ fun CallLogForgeScreen() {
                     durationInput = input
                 }
             },
-            label = { Text("通话时长（秒）") },
-            placeholder = { Text("例如 30") },
+            label = { Text("通话时长（秒，可留空）") },
+            placeholder = { Text("留空按 0 处理") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.width(200.dp),
+            modifier = Modifier.width(220.dp),
             singleLine = true
         )
 
-        // ---- SIM 卡选择 ----
-        if (simAccounts.isNotEmpty()) {
-            Text("选择 SIM 卡")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                simAccounts.forEachIndexed { index, _ ->
-                    FilterChip(
-                        selected = selectedSimIndex == index,
-                        onClick = { selectedSimIndex = index },
-                        label = { Text("卡${index + 1}") }
-                    )
-                }
-            }
-        } else {
-            Text(
-                text = if (hasReadPhoneState) "未检测到 SIM 卡账户（将使用默认）"
-                else "未获得电话状态权限，无法识别 SIM 卡",
-                style = MaterialTheme.typography.bodySmall
+        // ---- SIM 卡选择：始终显示 ----
+        Text("选择 SIM 卡")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = selectedSimSlot == 1,
+                onClick = { selectedSimSlot = 1 },
+                label = { Text("卡1") }
+            )
+            FilterChip(
+                selected = selectedSimSlot == 2,
+                onClick = { selectedSimSlot = 2 },
+                label = { Text("卡2") }
             )
         }
+        val simStatus = when {
+            !hasReadPhoneState -> "未获得电话状态权限，将使用占位标识"
+            simAccounts.isEmpty() -> "未检测到 SIM 卡账户，将使用占位标识"
+            simAccounts.size == 1 -> "检测到 1 张 SIM 卡，卡2 将使用占位标识"
+            else -> "检测到 ${simAccounts.size} 张 SIM 卡"
+        }
+        Text(simStatus, style = MaterialTheme.typography.bodySmall)
 
         // ---- 生成按钮 ----
         Button(
@@ -279,6 +287,8 @@ fun CallLogForgeScreen() {
                     return@Button
                 }
 
+                // 空字符串 → 0
+                val second = secondInput.toIntOrNull() ?: 0
                 val durationSeconds = durationInput.toIntOrNull() ?: 0
 
                 val calendar = Calendar.getInstance().apply {
@@ -287,16 +297,12 @@ fun CallLogForgeScreen() {
                     set(Calendar.DAY_OF_MONTH, selectedDay)
                     set(Calendar.HOUR_OF_DAY, selectedHour)
                     set(Calendar.MINUTE, selectedMinute)
-                    set(Calendar.SECOND, selectedSecond)
+                    set(Calendar.SECOND, second)
                     set(Calendar.MILLISECOND, 0)
                 }
                 val timestamp = calendar.timeInMillis
 
-                val accountId = if (simAccounts.isNotEmpty() && selectedSimIndex < simAccounts.size) {
-                    simAccounts[selectedSimIndex].id
-                } else {
-                    null
-                }
+                val accountHandle = simAccounts.getOrNull(selectedSimSlot - 1)
 
                 val values = ContentValues().apply {
                     put(CallLog.Calls.NUMBER, phoneNumber)
@@ -304,8 +310,20 @@ fun CallLogForgeScreen() {
                     put(CallLog.Calls.DATE, timestamp)
                     put(CallLog.Calls.DURATION, durationSeconds)
                     put(CallLog.Calls.NEW, 1)
-                    if (accountId != null) {
-                        put(CallLog.Calls.PHONE_ACCOUNT_ID, accountId)
+
+                    if (accountHandle != null) {
+                        // 真实 SIM 卡：ID + ComponentName 两个都要写
+                        put(CallLog.Calls.PHONE_ACCOUNT_ID, accountHandle.id)
+                        try {
+                            put(
+                                CallLog.Calls.PHONE_ACCOUNT_COMPONENT_NAME,
+                                accountHandle.componentName.flattenToString()
+                            )
+                        } catch (_: Exception) {
+                        }
+                    } else {
+                        // 未检测到账户时写入占位标识
+                        put(CallLog.Calls.PHONE_ACCOUNT_ID, "sim_slot_$selectedSimSlot")
                     }
                 }
 
@@ -315,11 +333,11 @@ fun CallLogForgeScreen() {
                         val formatted = String.format(
                             "%04d-%02d-%02d %02d:%02d:%02d",
                             selectedYear, selectedMonth + 1, selectedDay,
-                            selectedHour, selectedMinute, selectedSecond
+                            selectedHour, selectedMinute, second
                         )
                         Toast.makeText(
                             context,
-                            "已生成：$formatted，时长 ${durationSeconds} 秒",
+                            "已生成：$formatted，时长 ${durationSeconds} 秒，卡$selectedSimSlot",
                             Toast.LENGTH_LONG
                         ).show()
                     } else {
