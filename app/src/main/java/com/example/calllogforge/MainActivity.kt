@@ -5,7 +5,6 @@ import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.ContentValues
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Bundle
 import android.provider.CallLog
 import android.telecom.PhoneAccountHandle
@@ -17,7 +16,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -36,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -118,6 +118,10 @@ fun CallLogForgeScreen() {
     var selectedSimSlot by remember { mutableIntStateOf(1) }
     var simAccounts by remember { mutableStateOf<List<PhoneAccountHandle>>(emptyList()) }
     var subscriptionInfoList by remember { mutableStateOf<List<SubscriptionInfo>>(emptyList()) }
+
+    // ---- 拦截提示对话框状态 ----
+    var showInterceptDialog by remember { mutableStateOf(false) }
+    var interceptMessage by remember { mutableStateOf("") }
 
     // ---- 加载 SIM 卡信息 ----
     LaunchedEffect(hasReadPhoneState) {
@@ -314,7 +318,6 @@ fun CallLogForgeScreen() {
                 }
                 val timestamp = calendar.timeInMillis
 
-                // 根据卡槽索引（0=卡1，1=卡2）拿到 subscriptionId
                 val slotIndex = selectedSimSlot - 1
                 val subscriptionId: Int? = subscriptionInfoList
                     .firstOrNull { it.simSlotIndex == slotIndex }
@@ -329,10 +332,8 @@ fun CallLogForgeScreen() {
                     put(CallLog.Calls.NEW, 1)
 
                     if (subscriptionId != null && subscriptionId >= 0) {
-                        // 方式一：subscriptionId（兼容性最好）
                         put(CallLog.Calls.PHONE_ACCOUNT_ID, subscriptionId.toString())
                     } else if (accountHandle != null) {
-                        // 方式二：回退到 PhoneAccountHandle
                         put(CallLog.Calls.PHONE_ACCOUNT_ID, accountHandle.id)
                         try {
                             put(
@@ -353,16 +354,14 @@ fun CallLogForgeScreen() {
                         return@Button
                     }
 
-                    // ---- 写入后验证：查询实际存进去的 PHONE_ACCOUNT_ID ----
+                    // 写入后验证
                     val verifiedAccountId = try {
                         context.contentResolver.query(
                             uri,
                             arrayOf(CallLog.Calls.PHONE_ACCOUNT_ID),
                             null, null, null
                         )?.use { cursor ->
-                            if (cursor.moveToFirst()) {
-                                cursor.getString(0)
-                            } else null
+                            if (cursor.moveToFirst()) cursor.getString(0) else null
                         }
                     } catch (e: Exception) {
                         null
@@ -379,21 +378,16 @@ fun CallLogForgeScreen() {
                         ?: "sim_slot_$selectedSimSlot"
 
                     if (verifiedAccountId == null || verifiedAccountId != expectedId) {
-                        // 被静默拦截：弹窗引导用户手动开权限
-                        AlertDialog.Builder(context)
-                            .setTitle("写入可能被系统拦截")
-                            .setMessage(
-                                "系统返回了写入成功的信号，但查询到的 SIM 卡标识与预期不一致。\n\n" +
-                                    "预期：$expectedId\n" +
-                                    "实际：${verifiedAccountId ?: "读不到"}\n\n" +
-                                    "小米 / 一加等系统存在“静默拦截”，即使权限已授予也可能不真正写入。\n\n" +
-                                    "请前往：\n" +
-                                    "设置 → 应用管理 → CallLogForge → 权限管理，\n" +
-                                    "找到“修改通话记录”或“通话记录”权限，手动开启为“始终允许”。\n\n" +
-                                    "部分机型还需在“手机管家/安全中心”的隐私保护中放行本应用。"
-                            )
-                            .setPositiveButton("知道了", null)
-                            .show()
+                        interceptMessage =
+                            "系统返回了写入成功的信号，但查询到的 SIM 卡标识与预期不一致。\n\n" +
+                                "预期：$expectedId\n" +
+                                "实际：${verifiedAccountId ?: "读不到"}\n\n" +
+                                "小米 / 一加等系统存在“静默拦截”，即使权限已授予也可能不真正写入。\n\n" +
+                                "请前往：\n" +
+                                "设置 → 应用管理 → CallLogForge → 权限管理，\n" +
+                                "找到“修改通话记录”或“通话记录”权限，手动开启为“始终允许”。\n\n" +
+                                "部分机型还需在“手机管家/安全中心”的隐私保护中放行本应用。"
+                        showInterceptDialog = true
                     } else {
                         Toast.makeText(
                             context,
@@ -409,5 +403,19 @@ fun CallLogForgeScreen() {
         ) {
             Text("生成通话记录")
         }
+    }
+
+    // ---- 拦截提示对话框（Compose 版本，不需要 AppCompat 主题） ----
+    if (showInterceptDialog) {
+        AlertDialog(
+            onDismissRequest = { showInterceptDialog = false },
+            title = { Text("写入可能被系统拦截") },
+            text = { Text(interceptMessage) },
+            confirmButton = {
+                TextButton(onClick = { showInterceptDialog = false }) {
+                    Text("知道了")
+                }
+            }
+        )
     }
 }
