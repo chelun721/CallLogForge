@@ -3,17 +3,21 @@ package com.example.calllogforge
 import android.Manifest
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
-import android.telecom.PhoneAccountHandle
-import android.telecom.TelecomManager
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.provider.CallLog
+import android.telecom.PhoneAccountHandle
+import android.telecom.TelecomManager
+import android.telephony.SubscriptionInfo
+import android.telephony.SubscriptionManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -106,28 +110,33 @@ fun CallLogForgeScreen() {
     var selectedHour by remember { mutableIntStateOf(Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) }
     var selectedMinute by remember { mutableIntStateOf(Calendar.getInstance().get(Calendar.MINUTE)) }
 
-    // 秒数：字符串状态，允许为空
     var secondInput by remember {
         mutableStateOf(Calendar.getInstance().get(Calendar.SECOND).toString())
     }
-    // 通话时长：字符串状态，允许为空
     var durationInput by remember { mutableStateOf("30") }
 
-    // SIM 卡槽：1 或 2，始终可选
     var selectedSimSlot by remember { mutableIntStateOf(1) }
     var simAccounts by remember { mutableStateOf<List<PhoneAccountHandle>>(emptyList()) }
+    var subscriptionInfoList by remember { mutableStateOf<List<SubscriptionInfo>>(emptyList()) }
 
-    // ---- 加载真实 SIM 卡账户 ----
+    // ---- 加载 SIM 卡信息 ----
     LaunchedEffect(hasReadPhoneState) {
         if (hasReadPhoneState) {
             try {
                 val telecomManager = context.getSystemService(TelecomManager::class.java)
                 simAccounts = telecomManager.callCapablePhoneAccounts ?: emptyList()
+
+                val subscriptionManager =
+                    context.getSystemService(SubscriptionManager::class.java)
+                subscriptionInfoList =
+                    subscriptionManager.activeSubscriptionInfoList ?: emptyList()
             } catch (e: Exception) {
                 simAccounts = emptyList()
+                subscriptionInfoList = emptyList()
             }
         } else {
             simAccounts = emptyList()
+            subscriptionInfoList = emptyList()
         }
     }
 
@@ -219,7 +228,7 @@ fun CallLogForgeScreen() {
             }
         }
 
-        // ---- 秒数：可留空 ----
+        // ---- 秒数（可留空） ----
         OutlinedTextField(
             value = secondInput,
             onValueChange = { input ->
@@ -238,7 +247,7 @@ fun CallLogForgeScreen() {
             singleLine = true
         )
 
-        // ---- 通话时长：可留空 ----
+        // ---- 通话时长（可留空） ----
         OutlinedTextField(
             value = durationInput,
             onValueChange = { input ->
@@ -253,7 +262,7 @@ fun CallLogForgeScreen() {
             singleLine = true
         )
 
-        // ---- SIM 卡选择：始终显示 ----
+        // ---- SIM 卡选择 ----
         Text("选择 SIM 卡")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
@@ -269,9 +278,13 @@ fun CallLogForgeScreen() {
         }
         val simStatus = when {
             !hasReadPhoneState -> "未获得电话状态权限，将使用占位标识"
-            simAccounts.isEmpty() -> "未检测到 SIM 卡账户，将使用占位标识"
-            simAccounts.size == 1 -> "检测到 1 张 SIM 卡，卡2 将使用占位标识"
-            else -> "检测到 ${simAccounts.size} 张 SIM 卡"
+            subscriptionInfoList.isNotEmpty() ->
+                "检测到 ${subscriptionInfoList.size} 张 SIM 卡：" +
+                    subscriptionInfoList.joinToString(" ") { info ->
+                        "卡${info.simSlotIndex + 1}(subId=${info.subscriptionId})"
+                    }
+            simAccounts.isNotEmpty() -> "检测到 ${simAccounts.size} 张 SIM 卡（Telecom 账户）"
+            else -> "未检测到 SIM 卡账户，将使用占位标识"
         }
         Text(simStatus, style = MaterialTheme.typography.bodySmall)
 
@@ -287,7 +300,6 @@ fun CallLogForgeScreen() {
                     return@Button
                 }
 
-                // 空字符串 → 0
                 val second = secondInput.toIntOrNull() ?: 0
                 val durationSeconds = durationInput.toIntOrNull() ?: 0
 
@@ -302,7 +314,12 @@ fun CallLogForgeScreen() {
                 }
                 val timestamp = calendar.timeInMillis
 
-                val accountHandle = simAccounts.getOrNull(selectedSimSlot - 1)
+                // 根据卡槽索引（0=卡1，1=卡2）拿到 subscriptionId
+                val slotIndex = selectedSimSlot - 1
+                val subscriptionId: Int? = subscriptionInfoList
+                    .firstOrNull { it.simSlotIndex == slotIndex }
+                    ?.subscriptionId
+                val accountHandle = simAccounts.getOrNull(slotIndex)
 
                 val values = ContentValues().apply {
                     put(CallLog.Calls.NUMBER, phoneNumber)
@@ -311,8 +328,11 @@ fun CallLogForgeScreen() {
                     put(CallLog.Calls.DURATION, durationSeconds)
                     put(CallLog.Calls.NEW, 1)
 
-                    if (accountHandle != null) {
-                        // 真实 SIM 卡：ID + ComponentName 两个都要写
+                    if (subscriptionId != null && subscriptionId >= 0) {
+                        // 方式一：subscriptionId（兼容性最好）
+                        put(CallLog.Calls.PHONE_ACCOUNT_ID, subscriptionId.toString())
+                    } else if (accountHandle != null) {
+                        // 方式二：回退到 PhoneAccountHandle
                         put(CallLog.Calls.PHONE_ACCOUNT_ID, accountHandle.id)
                         try {
                             put(
@@ -322,26 +342,64 @@ fun CallLogForgeScreen() {
                         } catch (_: Exception) {
                         }
                     } else {
-                        // 未检测到账户时写入占位标识
                         put(CallLog.Calls.PHONE_ACCOUNT_ID, "sim_slot_$selectedSimSlot")
                     }
                 }
 
                 try {
                     val uri = context.contentResolver.insert(CallLog.Calls.CONTENT_URI, values)
-                    if (uri != null) {
-                        val formatted = String.format(
-                            "%04d-%02d-%02d %02d:%02d:%02d",
-                            selectedYear, selectedMonth + 1, selectedDay,
-                            selectedHour, selectedMinute, second
-                        )
+                    if (uri == null) {
+                        Toast.makeText(context, "写入失败：返回空 URI", Toast.LENGTH_SHORT).show()
+                        return@Button
+                    }
+
+                    // ---- 写入后验证：查询实际存进去的 PHONE_ACCOUNT_ID ----
+                    val verifiedAccountId = try {
+                        context.contentResolver.query(
+                            uri,
+                            arrayOf(CallLog.Calls.PHONE_ACCOUNT_ID),
+                            null, null, null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                cursor.getString(0)
+                            } else null
+                        }
+                    } catch (e: Exception) {
+                        null
+                    }
+
+                    val formatted = String.format(
+                        "%04d-%02d-%02d %02d:%02d:%02d",
+                        selectedYear, selectedMonth + 1, selectedDay,
+                        selectedHour, selectedMinute, second
+                    )
+
+                    val expectedId = subscriptionId?.toString()
+                        ?: accountHandle?.id
+                        ?: "sim_slot_$selectedSimSlot"
+
+                    if (verifiedAccountId == null || verifiedAccountId != expectedId) {
+                        // 被静默拦截：弹窗引导用户手动开权限
+                        AlertDialog.Builder(context)
+                            .setTitle("写入可能被系统拦截")
+                            .setMessage(
+                                "系统返回了写入成功的信号，但查询到的 SIM 卡标识与预期不一致。\n\n" +
+                                    "预期：$expectedId\n" +
+                                    "实际：${verifiedAccountId ?: "读不到"}\n\n" +
+                                    "小米 / 一加等系统存在“静默拦截”，即使权限已授予也可能不真正写入。\n\n" +
+                                    "请前往：\n" +
+                                    "设置 → 应用管理 → CallLogForge → 权限管理，\n" +
+                                    "找到“修改通话记录”或“通话记录”权限，手动开启为“始终允许”。\n\n" +
+                                    "部分机型还需在“手机管家/安全中心”的隐私保护中放行本应用。"
+                            )
+                            .setPositiveButton("知道了", null)
+                            .show()
+                    } else {
                         Toast.makeText(
                             context,
                             "已生成：$formatted，时长 ${durationSeconds} 秒，卡$selectedSimSlot",
                             Toast.LENGTH_LONG
                         ).show()
-                    } else {
-                        Toast.makeText(context, "写入失败：返回空 URI", Toast.LENGTH_SHORT).show()
                     }
                 } catch (e: Exception) {
                     Toast.makeText(context, "写入异常：${e.message}", Toast.LENGTH_LONG).show()
