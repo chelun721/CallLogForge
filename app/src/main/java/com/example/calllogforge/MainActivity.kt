@@ -4,11 +4,11 @@ import android.Manifest
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.telecom.PhoneAccountHandle
+import android.telecom.TelecomManager
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.provider.CallLog
-import android.telephony.TelephonyManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -113,12 +113,12 @@ fun CallLogForgeScreen() {
     var selectedSimIndex by remember { mutableIntStateOf(0) }
     var simAccounts by remember { mutableStateOf<List<PhoneAccountHandle>>(emptyList()) }
 
-    // ---- SIM 卡账户加载 ----
+    // ---- SIM 卡账户加载：改用 TelecomManager（API 23+） ----
     LaunchedEffect(hasWriteCallLog, hasReadPhoneState) {
         if (hasReadPhoneState) {
             try {
-                val tm = context.getSystemService(TelephonyManager::class.java)
-                simAccounts = tm.callCapablePhoneAccounts ?: emptyList()
+                val telecomManager = context.getSystemService(TelecomManager::class.java)
+                simAccounts = telecomManager.callCapablePhoneAccounts ?: emptyList()
             } catch (e: Exception) {
                 simAccounts = emptyList()
             }
